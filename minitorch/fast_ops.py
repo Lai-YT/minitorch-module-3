@@ -7,7 +7,6 @@ from numba import prange
 from numba import njit as _njit
 
 from .tensor_data import (
-    MAX_DIMS,
     broadcast_index,
     index_to_position,
     shape_broadcast,
@@ -139,6 +138,20 @@ class FastOps(TensorOps):
 # Implementations
 
 
+@njit
+def is_stride_aligned(
+    out_shape: Shape,
+    out_strides: Strides,
+    in_shape: Shape,
+    in_strides: Strides,
+) -> bool:
+    return (
+        len(out_strides) == len(in_strides)
+        and (out_strides == in_strides).all()
+        and (out_shape == in_shape).all()
+    )
+
+
 def tensor_map(
     fn: Callable[[float], float],
 ) -> Callable[[Storage, Shape, Strides, Storage, Shape, Strides], None]:
@@ -168,22 +181,27 @@ def tensor_map(
         in_shape: Shape,
         in_strides: Strides,
     ) -> None:
-        in_index: Index = np.zeros(len(in_shape), dtype=np.int32)
+        if is_stride_aligned(out_shape, out_strides, in_shape, in_strides):
+            # Fast path: storage layouts match exactly — operate directly on
+            # flattened storage without index conversion.
+            for i in prange(len(out)):
+                out[i] = fn(in_storage[i])
+        else:
+            for i in prange(len(out)):
+                out_index: Index = np.empty(len(out_shape), dtype=np.int32)
+                in_index: Index = np.empty(len(in_shape), dtype=np.int32)
+                # Convert ordinal to index in out_shape
+                to_index(i, out_shape, out_index)
 
-        for i in prange(len(out)):
-            out_index: Index = np.zeros(len(out_shape), dtype=np.int32)
-            # Convert ordinal to index in out_shape
-            to_index(i, out_shape, out_index)
+                # Map index to input shape (broadcasting)
+                broadcast_index(out_index, out_shape, in_shape, in_index)
 
-            # Map index to input shape (broadcasting)
-            broadcast_index(out_index, out_shape, in_shape, in_index)
+                # Convert indices to storage positions
+                out_pos = index_to_position(out_index, out_strides)
+                in_pos = index_to_position(in_index, in_strides)
 
-            # Convert indices to storage positions
-            out_pos = index_to_position(out_index, out_strides)
-            in_pos = index_to_position(in_index, in_strides)
-
-            # Apply function
-            out[out_pos] = fn(in_storage[in_pos])
+                # Apply function
+                out[out_pos] = fn(in_storage[in_pos])
 
     return njit(_map, parallel=True)  # type: ignore
 
@@ -222,27 +240,33 @@ def tensor_zip(
         b_shape: Shape,
         b_strides: Strides,
     ) -> None:
-        a_index: Index = np.zeros(len(a_shape), dtype=np.int32)
-        b_index: Index = np.zeros(len(b_shape), dtype=np.int32)
+        if is_stride_aligned(
+            out_shape, out_strides, a_shape, a_strides
+        ) and is_stride_aligned(out_shape, out_strides, b_shape, b_strides):
+            # All layouts identical: operate directly on flattened storage.
+            for i in prange(len(out)):
+                out[i] = fn(a_storage[i], b_storage[i])
+        else:
+            for i in prange(len(out)):
+                out_index: Index = np.empty(len(out_shape), dtype=np.int32)
+                a_index: Index = np.empty(len(a_shape), dtype=np.int32)
+                b_index: Index = np.empty(len(b_shape), dtype=np.int32)
+                # Convert ordinal to index in out_shape
+                to_index(i, out_shape, out_index)
 
-        for i in prange(len(out)):
-            out_index: Index = np.zeros(len(out_shape), dtype=np.int32)
-            # Convert ordinal to index in out_shape
-            to_index(i, out_shape, out_index)
+                # Map index to a_shape (broadcasting)
+                broadcast_index(out_index, out_shape, a_shape, a_index)
 
-            # Map index to a_shape (broadcasting)
-            broadcast_index(out_index, out_shape, a_shape, a_index)
+                # Map index to b_shape (broadcasting)
+                broadcast_index(out_index, out_shape, b_shape, b_index)
 
-            # Map index to b_shape (broadcasting)
-            broadcast_index(out_index, out_shape, b_shape, b_index)
+                # Convert indices to storage positions
+                out_pos = index_to_position(out_index, out_strides)
+                a_pos = index_to_position(a_index, a_strides)
+                b_pos = index_to_position(b_index, b_strides)
 
-            # Convert indices to storage positions
-            out_pos = index_to_position(out_index, out_strides)
-            a_pos = index_to_position(a_index, a_strides)
-            b_pos = index_to_position(b_index, b_strides)
-
-            # Apply function
-            out[out_pos] = fn(a_storage[a_pos], b_storage[b_pos])
+                # Apply function
+                out[out_pos] = fn(a_storage[a_pos], b_storage[b_pos])
 
     return njit(_zip, parallel=True)  # type: ignore
 
@@ -278,7 +302,7 @@ def tensor_reduce(
         reduce_dim: int,
     ) -> None:
         for i in prange(len(out)):
-            out_index: Index = np.zeros(len(out_shape), dtype=np.int32)
+            out_index: Index = np.empty(len(out_shape), dtype=np.int32)
             to_index(i, out_shape, out_index)
             out_pos = index_to_position(out_index, out_strides)
 
@@ -289,7 +313,7 @@ def tensor_reduce(
             # Iterate over the reduction dimension
             for j in range(a_shape[reduce_dim]):
                 a_pos = base_a_pos + j * a_strides[reduce_dim]
-                out[out_pos] = fn(out[out_pos], a_storage[a_pos])
+                out[out_pos] = fn(float(out[out_pos]), float(a_storage[a_pos]))
 
     return njit(_reduce, parallel=True)  # type: ignore
 
