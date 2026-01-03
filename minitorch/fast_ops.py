@@ -361,11 +361,40 @@ def _tensor_matrix_multiply(
         None : Fills in `out`
 
     """
+    # Compute the batch stride for A and B. If the batch dimension is 1
+    # (i.e. the tensor is broadcast across batches) use a zero stride so
+    # the same matrix is reused for every output batch.
     a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
 
-    # TODO: Implement for Task 3.2.
-    raise NotImplementedError("Need to implement for Task 3.2")
+    # Loop over batches, then rows (i) and columns (j) of the output.
+    # The inner loop over k computes the dot-product for out[batch, i, j].
+    for batch in prange(out_shape[0]):
+        for i in range(out_shape[-2]):
+            for j in range(out_shape[-1]):
+                acc = 0.0
+                # Sum over the shared dimension k (columns of A, rows of B).
+                for k in range(a_shape[-1]):
+                    # Compute flattened storage offsets directly using strides:
+                    # a element at [batch, i, k] -> batch*a_batch_stride + i*a_strides[-2] + k*a_strides[-1]
+                    # b element at [batch, k, j] -> batch*b_batch_stride + k*b_strides[-2] + j*b_strides[-1]
+                    acc += (
+                        a_storage[
+                            batch * a_batch_stride
+                            + i * a_strides[-2]
+                            + k * a_strides[-1]
+                        ]
+                        * b_storage[
+                            batch * b_batch_stride
+                            + k * b_strides[-2]
+                            + j * b_strides[-1]
+                        ]
+                    )
+                # Write the accumulated dot product into the flattened out storage
+                # at position corresponding to [batch, i, j].
+                out[
+                    batch * out_strides[0] + i * out_strides[-2] + j * out_strides[-1]
+                ] = acc
 
 
 tensor_matrix_multiply = njit(_tensor_matrix_multiply, parallel=True)
