@@ -48,9 +48,9 @@ def index_to_position(index: Index, strides: Strides) -> int:
     """
     # NOTE: np.sum is not supported by numba CUDA kernels
     position = 0
-    for i in range(len(index)):
+    for i in range(len(strides)):
         position += index[i] * strides[i]
-    return position
+    return int(position)
 
 
 def to_index(ordinal: int, shape: Shape, out_index: OutIndex) -> None:
